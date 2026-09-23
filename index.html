@@ -19,7 +19,7 @@ p { line-height: 1.7; }
 button { flex-shrink: 0; border: 0; border-radius: 8px; padding: 12px 18px; background: #8f7a66; color: white; font: inherit; font-weight: 700; cursor: pointer; }
 button:hover { background: #76614f; }
 button:focus-visible { outline: 3px solid #edc22e; outline-offset: 4px; }
-#board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; padding: 10px; border-radius: 14px; background: #bbada0; touch-action: none; user-select: none; }
+#board { position: relative; display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; padding: 10px; border-radius: 14px; background: #bbada0; touch-action: none; user-select: none; }
 .cell { aspect-ratio: 1; display: grid; place-items: center; border-radius: 8px; background: #cdc1b4; font-size: clamp(24px, 8vw, 46px); font-weight: 800; }
 .cell[data-value="2"] { background: #eee4da; }
 .cell[data-value="4"] { background: #ede0c8; }
@@ -31,6 +31,13 @@ button:focus-visible { outline: 3px solid #edc22e; outline-offset: 4px; }
 .cell[data-value="256"] { background: #edcc61; color: white; font-size: clamp(22px, 7vw, 38px); }
 .cell[data-value="512"] { background: #edc850; color: white; font-size: clamp(22px, 7vw, 38px); }
 .cell[data-value="1024"], .cell[data-value="2048"] { background: #edc22e; color: white; font-size: clamp(19px, 6vw, 32px); box-shadow: 0 0 18px #edc22e55; }
+.slot { aspect-ratio: 1; border-radius: 8px; background: #cdc1b4; }
+.cell { z-index: 1; }
+.cell.spawn { animation: appear 150ms ease-out; }
+.cell.merged { animation: merge-pop 180ms ease-out; }
+@keyframes appear { from { transform: scale(.55); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+@keyframes merge-pop { 0%, 100% { transform: scale(1); } 45% { transform: scale(1.14); } }
+@media (prefers-reduced-motion: reduce) { .cell.spawn, .cell.merged { animation: none; } }
 .hint { margin: 22px 0 0; font-size: 14px; text-align: center; }
 dialog { border: 0; border-radius: 18px; padding: 32px; color: #776e65; text-align: center; width: min(340px, 90vw); box-shadow: 0 20px 80px #0003; }
 dialog::backdrop { background: #faf8efbb; backdrop-filter: blur(4px); }
@@ -64,24 +71,33 @@ const scoreElement = document.getElementById("score");
 const result = document.getElementById("result");
 let board, score, finished;
 let touchStart = null;
+let moving = false;
+let pendingDirection = null;
+let generation = 0;
+const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 // Slide and merge a line; each tile can merge only once per move.
 function mergeLine(line) {
-  const values = line.filter(value => value !== 0);
-  const merged = [];
+  const values = line.map((value, source) => ({ value, source }))
+    .filter(tile => tile.value !== 0);
+  const merged = [], paths = [], merges = [];
   let gained = 0;
   for (let i = 0; i < values.length; i++) {
-    if (i + 1 < values.length && values[i] === values[i + 1]) {
-      const value = values[i] * 2;
+    const target = merged.length;
+    paths.push({ source: values[i].source, target });
+    if (i + 1 < values.length && values[i].value === values[i + 1].value) {
+      const value = values[i].value * 2;
       merged.push(value);
       gained += value;
+      paths.push({ source: values[i + 1].source, target });
+      merges.push(target);
       i++;
     } else {
-      merged.push(values[i]);
+      merged.push(values[i].value);
     }
   }
   while (merged.length < SIZE) merged.push(0);
-  return { line: merged, gained };
+  return { line: merged, gained, paths, merges };
 }
 
 function addRandomTile() {
@@ -94,6 +110,7 @@ function addRandomTile() {
   if (!empty.length) return;
   const [r, c] = empty[Math.floor(Math.random() * empty.length)];
   board[r][c] = Math.random() < 0.9 ? 2 : 4;
+  return r * SIZE + c;
 }
 
 function canMove() {
@@ -107,14 +124,24 @@ function canMove() {
   return false;
 }
 
-function render() {
+function render(spawned = [], merged = []) {
   boardElement.replaceChildren();
   board.forEach((row, r) => row.forEach((value, c) => {
+    const position = r * SIZE + c;
+    const slot = document.createElement("div");
+    slot.className = "slot";
+    slot.style.gridArea = `${r + 1} / ${c + 1}`;
+    slot.setAttribute("aria-hidden", "true");
+    boardElement.appendChild(slot);
+    if (!value) return;
     const cell = document.createElement("div");
-    cell.className = "cell";
+    cell.className = "cell" + (spawned.includes(position) ? " spawn" :
+      merged.includes(position) ? " merged" : "");
+    cell.style.gridArea = slot.style.gridArea;
     cell.dataset.value = value;
-    cell.textContent = value || "";
-    cell.setAttribute("aria-label", `Row ${r + 1}, column ${c + 1}: ${value || "empty"}`);
+    cell.dataset.position = position;
+    cell.textContent = value;
+    cell.setAttribute("aria-label", `Row ${r + 1}, column ${c + 1}: ${value}`);
     boardElement.appendChild(cell);
   }));
   scoreElement.textContent = score;
@@ -130,8 +157,15 @@ function checkEnd() {
   result.showModal();
 }
 
-function move(direction) {
+async function move(direction) {
   if (finished) return;
+  if (moving) {
+    pendingDirection = direction;
+    return;
+  }
+  const next = board.map(row => [...row]);
+  const movements = [], mergedPositions = [];
+  let gained = 0;
   let changed = false;
   for (let i = 0; i < SIZE; i++) {
     const positions = [];
@@ -143,27 +177,65 @@ function move(direction) {
     }
     const original = positions.map(([r, c]) => board[r][c]);
     const merged = mergeLine(original);
-    score += merged.gained;
+    gained += merged.gained;
     positions.forEach(([r, c], j) => {
       if (board[r][c] !== merged.line[j]) changed = true;
-      board[r][c] = merged.line[j];
+      next[r][c] = merged.line[j];
+    });
+    merged.paths.forEach(({ source, target }) => {
+      if (source !== target) movements.push({ from: positions[source], to: positions[target] });
+    });
+    merged.merges.forEach(target => {
+      const [r, c] = positions[target];
+      mergedPositions.push(r * SIZE + c);
     });
   }
-  // Only a valid move spawns a new tile.
-  if (changed) addRandomTile();
-  render();
+  if (!changed) {
+    checkEnd();
+    return;
+  }
+
+  moving = true;
+  const turn = generation;
+  const slots = [...boardElement.querySelectorAll(".slot")];
+  const animations = movements.map(({ from: [r, c], to: [tr, tc] }) => {
+    const tile = boardElement.querySelector(`[data-position="${r * SIZE + c}"]`);
+    // Finish a previous spawn/pop effect before starting the slide.
+    tile.getAnimations().forEach(animation => animation.cancel());
+    tile.classList.remove("spawn", "merged");
+    const source = slots[r * SIZE + c].getBoundingClientRect();
+    const target = slots[tr * SIZE + tc].getBoundingClientRect();
+    return tile.animate([
+      { transform: "translate(0, 0)" },
+      { transform: `translate(${target.left - source.left}px, ${target.top - source.top}px)` }
+    ], { duration: reducedMotion.matches ? 0 : 150, easing: "cubic-bezier(.2,.7,.3,1)", fill: "forwards" });
+  });
+  await Promise.all(animations.map(animation => animation.finished.catch(() => {})));
+  // Restart invalidates unfinished moves so old callbacks cannot alter a new game.
+  if (turn !== generation) return;
+  board = next;
+  score += gained;
+  const spawned = addRandomTile();
+  render([spawned], mergedPositions);
   checkEnd();
+  moving = false;
+  const queued = pendingDirection;
+  pendingDirection = null;
+  if (queued && !finished) move(queued);
 }
 
 function restart() {
+  generation++;
+  boardElement.getAnimations({ subtree: true }).forEach(animation => animation.cancel());
+  moving = false;
+  pendingDirection = null;
   if (result.open) result.close();
   board = Array.from({ length: SIZE }, () => Array(SIZE).fill(0));
   score = 0;
   finished = false;
   touchStart = null;
-  addRandomTile();
-  addRandomTile();
-  render();
+  const spawned = [addRandomTile(), addRandomTile()];
+  render(spawned);
 }
 
 document.addEventListener("keydown", event => {
