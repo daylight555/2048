@@ -31,6 +31,11 @@ button:focus-visible { outline: 3px solid #edc22e; outline-offset: 4px; }
 .cell[data-value="256"] { background: #edcc61; color: white; font-size: clamp(22px, 7vw, 38px); }
 .cell[data-value="512"] { background: #edc850; color: white; font-size: clamp(22px, 7vw, 38px); }
 .cell[data-value="1024"], .cell[data-value="2048"] { background: #edc22e; color: white; font-size: clamp(19px, 6vw, 32px); box-shadow: 0 0 18px #edc22e55; }
+.cell[data-value="4096"] { background: #5c9b88; color: white; font-size: clamp(18px, 5.5vw, 30px); }
+.cell[data-value="8192"] { background: #427f90; color: white; font-size: clamp(18px, 5.5vw, 30px); }
+.cell[data-value="16384"] { background: #546ba5; color: white; font-size: clamp(16px, 4.8vw, 26px); }
+.cell[data-value="32768"] { background: #795aa1; color: white; font-size: clamp(16px, 4.8vw, 26px); }
+.cell[data-value="65536"] { background: #a54d80; color: white; font-size: clamp(16px, 4.8vw, 26px); }
 .slot { aspect-ratio: 1; border-radius: 8px; background: #cdc1b4; }
 .cell { z-index: 1; }
 .cell.spawn { animation: appear 150ms ease-out; }
@@ -52,11 +57,11 @@ dialog h2 { font-size: 30px; margin: 0 0 12px; }
     <div class="score"><span>SCORE</span><strong id="score" aria-live="polite">0</strong></div>
   </header>
   <div class="toolbar">
-    <p>Merge matching tiles to reach <b>2048</b>!</p>
+    <p>Go beyond <b>2048</b>. Complete the ultimate board!</p>
     <button id="restart" type="button">Restart</button>
   </div>
   <div id="board" role="group" aria-label="2048 game board, four rows and four columns"></div>
-  <p class="hint">Use ↑ ↓ ← → arrow keys to move<br>On mobile, swipe across the board</p>
+  <p class="hint">Use ↑ ↓ ← → arrow keys to move<br>On mobile, swipe across the board<br>Ultimate goal: every power of 2 from 2 to 65,536.</p>
 </main>
 <dialog id="result" aria-labelledby="resultTitle" aria-describedby="resultText">
   <h2 id="resultTitle"></h2>
@@ -147,13 +152,21 @@ function render(spawned = [], merged = []) {
   scoreElement.textContent = score;
 }
 
+// The ultimate board contains each power of two exactly once, in any order.
+function hasUltimateBoard() {
+  const values = board.flat().sort((a, b) => a - b);
+  return values.length === SIZE * SIZE &&
+    values.every((value, index) => value === 2 ** (index + 1));
+}
+
 function checkEnd() {
-  const won = board.some(row => row.some(value => value >= 2048));
+  if (finished) return;
+  const won = hasUltimateBoard();
   if (!won && canMove()) return;
   finished = true;
-  document.getElementById("resultTitle").textContent = won ? "🎉 You Win!" : "Game Over";
+  document.getElementById("resultTitle").textContent = won ? "🎉 Ultimate Victory!" : "Game Over";
   document.getElementById("resultText").textContent =
-    (won ? "You reached 2048!" : "The board is full. No moves left.") + ` Final score: ${score}`;
+    (won ? "You completed the ultimate board: every power of 2 from 2 to 65,536!" : "The board is full. No moves left.") + ` Final score: ${score}`;
   result.showModal();
 }
 
